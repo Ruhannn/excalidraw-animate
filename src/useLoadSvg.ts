@@ -76,6 +76,7 @@ export const useLoadSvg = (
     {
       svg: SVGSVGElement;
       finishedMs: number;
+      steps: { startMs: number; endMs: number }[];
     }[]
   >([]);
 
@@ -114,7 +115,7 @@ export const useLoadSvg = (
           if (inSequence) {
             options.startMs = result.finishedMs;
           }
-          return { svg: themedSvg, finishedMs: result.finishedMs };
+          return { svg: themedSvg, ...result };
         }),
       );
       setLoadedSvgList(svgList);
@@ -134,10 +135,7 @@ export const useLoadSvg = (
         if (matchIdKey) {
           const [, id, key] = matchIdKey;
           const data = await loadScene(id, key, null);
-          const [{ svg, finishedMs }] = await loadDataList([data]);
-          if (searchParams.get('autoplay') === 'no') {
-            svg.setCurrentTime(finishedMs);
-          }
+          await loadDataList([data]);
         }
         const matchLibrary = /(.*\.excalidrawlib)/.exec(
           searchParams.get('library') || '',
@@ -145,15 +143,10 @@ export const useLoadSvg = (
         if (matchLibrary) {
           const [, url] = matchLibrary;
           const dataList = await importLibraryFromUrl(url);
-          const svgList = await loadDataList(
+          await loadDataList(
             dataList.map((elements) => ({ elements, appState: {}, files: {} })),
             searchParams.has('sequence'),
           );
-          if (searchParams.get('autoplay') === 'no') {
-            svgList.forEach(({ svg, finishedMs }) => {
-              svg.setCurrentTime(finishedMs);
-            });
-          }
         }
         if (!matchIdKey && !matchLibrary && initialData) {
           await loadDataList([initialData]);

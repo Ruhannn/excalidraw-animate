@@ -647,6 +647,7 @@ export const animateSvg = (
 ) => {
   const groups = createGroups(svg, elements);
   const finished = new Map();
+  const steps: { startMs: number; endMs: number }[] = [];
   let current = options.startMs ?? 1000; // 1 sec margin
   const groupDur = 5000;
   const individualDur = 500;
@@ -669,6 +670,7 @@ export const animateSvg = (
         const dur =
           extractNumberFromElement(element, 'animateDuration') ||
           groupDur / (group.length + 1);
+        steps.push({ startMs: current, endMs: current + dur });
         patchSvgEle(svg, ele, element, current, dur, options);
         current += dur;
         finished.set(ele, true);
@@ -685,6 +687,7 @@ export const animateSvg = (
               dur,
               options,
             );
+            steps.push({ startMs: current, endMs: current + dur });
             current += dur;
             finished.set(childEle, true);
           }
@@ -694,13 +697,14 @@ export const animateSvg = (
         const dur =
           extractNumberFromElement(element, 'animateDuration') || individualDur;
         patchSvgEle(svg, ele, element, current, dur, options);
+        steps.push({ startMs: current, endMs: current + dur });
         current += dur;
         finished.set(ele, true);
       }
     }
   });
   const finishedMs = current + 1000; // 1 sec margin
-  return { finishedMs };
+  return { finishedMs, steps };
 };
 
 export const getBeginTimeList = (svg: SVGSVGElement) => {

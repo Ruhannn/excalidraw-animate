@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -18,7 +19,6 @@ import type { BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 
 import GitHubCorner from './GitHubCorner';
-import { getBeginTimeList } from './animate';
 import { exportToSvgFile, exportToWebmFile, prepareWebmData } from './export';
 import { applyThemeToSvg } from './useLoadSvg';
 import { Modal } from './Modal';
@@ -33,13 +33,14 @@ const loadFromJSON = async () => {
 const linkRegex =
   /#json=([a-zA-Z0-9_-]+),?([a-zA-Z0-9_-]*)|^http.*\.excalidrawlib$/;
 
-const getCombinedBeginTimeList = (svgList: Props['svgList']) => {
-  const beginTimeList = ([] as number[]).concat(
-    ...svgList.map(({ svg }) =>
-      getBeginTimeList(svg).map((n) => Math.floor(n / 100) * 100),
-    ),
-  );
-  return [...new Set(beginTimeList)].sort((a, b) => a - b);
+const getCombinedStepList = (svgList: Props['svgList']) => {
+  const ends = new Map<number, number>();
+  svgList.forEach(({ steps }) => {
+    steps.forEach(({ startMs, endMs }) => {
+      ends.set(startMs, Math.max(ends.get(startMs) || 0, endMs));
+    });
+  });
+  return [...ends].sort(([a], [b]) => a - b);
 };
 
 const removeBackgroundRect = (svg: SVGSVGElement): SVGSVGElement => {
@@ -55,6 +56,7 @@ type Props = {
   svgList: {
     svg: SVGSVGElement;
     finishedMs: number;
+    steps: { startMs: number; endMs: number }[];
   }[];
   loadDataList: (
     data: {
@@ -112,7 +114,10 @@ const Toggle = ({
 
 const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
   const [showToolbar, setShowToolbar] = useState<boolean | 'never'>(false);
-  const [paused, setPaused] = useState(false);
+  const [autoplay, setAutoplay] = useState(
+    () => localStorage.getItem('autoplay') === 'true',
+  );
+  const [paused, setPaused] = useState(!autoplay);
   const [processing, setProcessing] = useState(false);
   const [link, setLink] = useState('');
   const [webmData, setWebmData] = useState<Blob>();
@@ -120,6 +125,9 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
   const [exportTheme, setExportTheme] = useState<'light' | 'dark'>(theme);
   const [exportBackground, setExportBackground] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const previousSvgList = useRef<Props['svgList'] | null>(null);
+  const stepList = useMemo(() => getCombinedStepList(svgList), [svgList]);
 
   useEffect(() => {
     // FIXME
@@ -128,14 +136,25 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
   }, [svgList]);
 
   useEffect(() => {
-    svgList.forEach(({ svg }) => {
-      if (paused) {
+    if (previousSvgList.current !== svgList) {
+      previousSvgList.current = svgList;
+      clearTimeout(timer.current);
+      svgList.forEach(({ svg }) => {
         svg.pauseAnimations();
-      } else {
-        svg.unpauseAnimations();
-      }
+        svg.setCurrentTime(0);
+        if (autoplay) svg.unpauseAnimations();
+      });
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPaused(!autoplay);
+      return;
+    }
+    svgList.forEach(({ svg }) => {
+      if (paused) svg.pauseAnimations();
+      else svg.unpauseAnimations();
     });
-  }, [svgList, paused]);
+  }, [svgList, paused, autoplay]);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   useEffect(() => {
     const hash = window.location.hash.slice(1);
@@ -212,33 +231,43 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
     setPaused((p) => !p);
   }, [svgList]);
 
-  const timer = useRef<NodeJS.Timeout>(undefined);
   const stepForwardAnimations = useCallback(() => {
-    if (!svgList.length) {
-      return;
-    }
-    const beginTimeList = getCombinedBeginTimeList(svgList);
+    if (!svgList.length) return;
     const currentTime = svgList[0].svg.getCurrentTime() * 1000;
-    let nextTime = beginTimeList.find((t) => t > currentTime + 50);
-    if (nextTime) {
-      nextTime -= 1;
-    } else {
-      nextTime = currentTime + 500;
-    }
-    clearTimeout(timer.current as NodeJS.Timeout);
+    const nextStep = stepList.find(([, endMs]) => endMs > currentTime + 0.5);
+    if (!nextStep) return;
+    const nextTime = nextStep[1];
+    clearTimeout(timer.current);
+    svgList.forEach(({ svg }) => svg.unpauseAnimations());
+    timer.current = setTimeout(
+      () => {
+        svgList.forEach(({ svg }) => {
+          svg.pauseAnimations();
+          svg.setCurrentTime(nextTime / 1000);
+        });
+        setPaused(true);
+      },
+      Math.max(0, nextTime - currentTime),
+    );
+  }, [svgList, stepList]);
+
+  const stepBackwardAnimations = useCallback(() => {
+    if (!svgList.length) return;
+    const currentTime = svgList[0].svg.getCurrentTime() * 1000;
+    const previousStep = stepList.findLast(
+      ([, endMs]) => endMs < currentTime - 0.5,
+    );
+    if (!previousStep) return;
+    clearTimeout(timer.current);
     svgList.forEach(({ svg }) => {
-      svg.unpauseAnimations();
+      svg.pauseAnimations();
+      svg.setCurrentTime(previousStep[1] / 1000);
     });
-    timer.current = setTimeout(() => {
-      svgList.forEach(({ svg }) => {
-        svg.pauseAnimations();
-        svg.setCurrentTime((nextTime as number) / 1000);
-      });
-      setPaused(true);
-    }, nextTime - currentTime);
-  }, [svgList]);
+    setPaused(true);
+  }, [svgList, stepList]);
 
   const resetAnimations = useCallback(() => {
+    clearTimeout(timer.current);
     svgList.forEach(({ svg }) => {
       svg.setCurrentTime(0);
     });
@@ -246,10 +275,23 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
 
   useEffect(() => {
     const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        if (
+          e.target instanceof HTMLElement &&
+          (e.target.isContentEditable ||
+            e.target.tagName === 'INPUT' ||
+            e.target.tagName === 'TEXTAREA')
+        ) {
+          return;
+        }
+        if (svgList.length) e.preventDefault();
+      }
       if (e.key.toLowerCase() === 'p') {
         togglePausedAnimations();
-      } else if (e.key.toLowerCase() === 's') {
+      } else if (e.key.toLowerCase() === 's' || e.key === 'ArrowRight') {
         stepForwardAnimations();
+      } else if (e.key === 'ArrowLeft') {
+        stepBackwardAnimations();
       } else if (e.key.toLowerCase() === 'r') {
         resetAnimations();
       } else if (e.key.toLowerCase() === 'q') {
@@ -264,7 +306,13 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
     return () => {
       document.removeEventListener('keydown', onKeydown);
     };
-  }, [togglePausedAnimations, stepForwardAnimations, resetAnimations]);
+  }, [
+    togglePausedAnimations,
+    stepForwardAnimations,
+    stepBackwardAnimations,
+    resetAnimations,
+    svgList,
+  ]);
 
   const hideToolbar = () => {
     setShowToolbar((s) => (typeof s === 'boolean' ? false : s));
@@ -352,6 +400,17 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
               Animate!
             </button>
           </form>
+          <label>
+            <input
+              type="checkbox"
+              checked={autoplay}
+              onChange={(e) => {
+                setAutoplay(e.target.checked);
+                localStorage.setItem('autoplay', String(e.target.checked));
+              }}
+            />
+            Autoplay
+          </label>
         </div>
         {!!svgList.length && (
           <div className="toolbar">
@@ -371,7 +430,7 @@ const Toolbar = ({ svgList, loadDataList, theme }: Props) => {
               type="button"
               onClick={stepForwardAnimations}
               className="app-button"
-              title="Advance animation to next step (shortcut: S)"
+              title="Advance animation to next step (shortcut: S or Right Arrow)"
             >
               Step (S)
             </button>

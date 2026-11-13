@@ -9,6 +9,7 @@ test.describe('Playback Controls', () => {
     await page.evaluate(
       ({ key, data }) => {
         localStorage.setItem(key, JSON.stringify(data));
+        localStorage.setItem('autoplay', 'true');
       },
       { key: STORAGE_KEY, data: drawing },
     );
@@ -152,6 +153,68 @@ test.describe('Playback Controls', () => {
     await expect(
       page.getByRole('button', { name: 'Hide Toolbar (Q)' }),
     ).toBeVisible();
+  });
+});
+
+test.describe('Presentation playback', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(
+      ({ key, data }) => {
+        localStorage.setItem(key, JSON.stringify(data));
+        localStorage.removeItem('autoplay');
+      },
+      { key: STORAGE_KEY, data: createDrawing('Test', 'test-element-1') },
+    );
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Play (P)' })).toBeVisible();
+  });
+
+  test('starts paused, steps by element in both directions, and leaves no partial drawing', async ({
+    page,
+  }) => {
+    const svg = page.locator('.Viewer-container svg');
+    const time = () =>
+      svg.evaluate((node: SVGSVGElement) => node.getCurrentTime());
+    await expect(
+      page.getByRole('checkbox', { name: 'Autoplay' }),
+    ).not.toBeChecked();
+    expect(await time()).toBe(0);
+    await page.keyboard.press('ArrowLeft');
+    expect(await time()).toBe(0);
+
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(time).toBe(1.5);
+    const firstFrame = await svg.screenshot();
+    await page.keyboard.press('ArrowLeft');
+    expect(await time()).toBe(1.5);
+    await page.keyboard.press('s');
+    await expect.poll(time).toBe(2);
+    await page.keyboard.press('ArrowLeft');
+    await expect.poll(time).toBe(1.5);
+    expect(await svg.screenshot()).toEqual(firstFrame);
+    await expect(page.getByRole('button', { name: 'Play (P)' })).toBeVisible();
+  });
+
+  test('remembers Autoplay and plays automatically after reload', async ({
+    page,
+  }) => {
+    await page.getByRole('checkbox', { name: 'Autoplay' }).check();
+    await page.reload();
+    await expect(
+      page.getByRole('checkbox', { name: 'Autoplay' }),
+    ).toBeChecked();
+    await expect(page.getByRole('button', { name: 'Pause (P)' })).toBeVisible();
+    const svg = page.locator('.Viewer-container svg');
+    await expect
+      .poll(() => svg.evaluate((node: SVGSVGElement) => node.getCurrentTime()))
+      .toBeGreaterThan(0);
+    await page.getByRole('checkbox', { name: 'Autoplay' }).uncheck();
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Play (P)' })).toBeVisible();
+    expect(
+      await svg.evaluate((node: SVGSVGElement) => node.getCurrentTime()),
+    ).toBe(0);
   });
 });
 
